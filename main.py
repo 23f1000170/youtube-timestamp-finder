@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from youtube_transcript_api import YouTubeTranscriptApi
 import re
+import json
 from google import genai
 from google.genai import types
 import os
@@ -58,24 +59,21 @@ def find_timestamp_in_transcript(video_id: str, topic: str) -> str:
         api = YouTubeTranscriptApi()
         transcript = api.fetch(video_id)
 
-        # Build FULL transcript with timestamps (no limit)
+        # Build FULL transcript with timestamps
         transcript_text = ""
         for entry in transcript:
             transcript_text += f"[{entry.start:.1f}s] {entry.text}\n"
 
-        # Use Gemini to find the timestamp intelligently
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
             client = genai.Client(api_key=api_key)
 
-            # Split transcript into chunks if too long (Gemini has token limits)
+            # If transcript is too long, narrow down with keyword search first
             max_chars = 50000
             if len(transcript_text) > max_chars:
-                # First try keyword search to narrow down the section
                 stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'we', 'can', 'that', 'this'}
                 topic_keywords = [word.lower() for word in topic.split() if word.lower() not in stop_words and len(word) > 2]
 
-                best_match_time = None
                 best_match_score = 0
                 best_match_idx = 0
 
@@ -84,17 +82,14 @@ def find_timestamp_in_transcript(video_id: str, topic: str) -> str:
                     score = sum(1 for keyword in topic_keywords if keyword in text_lower)
                     if score > best_match_score:
                         best_match_score = score
-                        best_match_time = entry.start
                         best_match_idx = i
 
-                # Extract a window around the best match
                 start_idx = max(0, best_match_idx - 50)
                 end_idx = min(len(transcript), best_match_idx + 100)
                 transcript_text = ""
                 for entry in transcript[start_idx:end_idx]:
                     transcript_text += f"[{entry.start:.1f}s] {entry.text}\n"
 
-            import json
             prompt = f"""Analyze this video transcript and find the EXACT timestamp in seconds when the following topic is FIRST mentioned or discussed:
 
 Topic: "{topic}"
@@ -148,7 +143,6 @@ Find the earliest moment this topic appears. Return the timestamp in seconds fro
         if best_match_time is not None:
             return seconds_to_timestamp(best_match_time)
 
-        # Last resort
         if transcript and len(transcript) > 0:
             mid_point = transcript[len(transcript) // 2].start
             return seconds_to_timestamp(mid_point)
